@@ -1,0 +1,87 @@
+{
+    "@context":[
+        "https://www.w3.org/2019/wot/td/v1",
+        {
+          "@language":"en"
+        }
+      ],
+    "@type":"Thing",
+    "title": "VirtualUarm",
+    "id": "urn:dev:ops:32473-virtual-uarm-one",
+    "description": "Uarm (Virtual)",
+    "security": "nosec_sc",
+    "securityDefinitions": { 
+      "nosec_sc": {
+        "scheme": "nosec" 
+      }
+    },
+    "properties": {
+        "currentPosition": {
+            "title": "Current Gripper Position",
+            "description": "Reads the current absolute position (x, y, z) of the Uarm gripper/end-effector in world coordinates.",
+            "type": "object",
+            "readOnly": true,
+            "properties": {
+                "x": {
+                    "type": "number",
+                    "unit": "meter"
+                },
+                "y": {
+                    "type": "number",
+                    "unit": "meter"
+                },
+                "z": {
+                    "type": "number",
+                    "unit": "meter"
+                }
+            }
+        }
+    },
+    "actions":{
+        "goTo":{
+            "title":"Go to position",
+            "description":"Move to Position x,y,z given by the user with fixed speed",
+            "synchronous":false,
+            "input":{
+                "properties":{
+                    "x":{
+                        "type":"number",
+                        "unit":"meter"
+                    },
+                    "y":{
+                        "type":"number",
+                        "unit":"meter"
+                    },
+                    "z":{
+                        "type":"number",
+                        "unit":"meter"
+                    }
+                },
+                "required":["x","y","z"],
+                "type":"object"
+            },
+            "output": {
+                "type": "string",
+                "description": "A string describing the outcome of the action."
+            }
+        },
+        "gripClose":{
+            "title":"Close gripper",
+            "description":"Close Uarm gripper",
+            "synchronous":false,
+            "output": {
+                "type": "string",
+                "description": "A string describing the outcome of the action."
+            }
+        },
+        "gripOpen":{
+            "title":"Open gripper",
+            "description":"Open Uarm gripper",
+            "synchronous":false,
+            "output": {
+                "type": "string",
+                "description": "A string describing the outcome of the action."
+            }
+        }
+    }
+}

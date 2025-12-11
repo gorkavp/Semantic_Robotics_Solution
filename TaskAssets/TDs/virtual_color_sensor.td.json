@@ -1,0 +1,61 @@
+{
+    "@context":[
+        "https://www.w3.org/2019/wot/td/v1",
+        {
+          "@language":"en"
+        }
+      ],
+    "@type":"Thing",
+    "title": "VirtualColorSensor",
+    "id": "urn:dev:ops:32473-virtual-color-sensor",
+    "description": "Color Sensor (Virtual)",
+    "security": "nosec_sc",
+    "securityDefinitions": { 
+      "nosec_sc": {
+        "scheme": "nosec" 
+      }
+    },
+    "properties": {
+        "objectPresence":{
+            "title": "Read infrared sensor",
+            "description": "get the sensor state if there is object",
+            "type": "boolean",
+            "readOnly": true,
+            "observable": true,
+            "forms": [
+              {
+                "href": "http://localhost:9001/virtualcolorsensor/properties/objectPresence",
+                "contentType": "application/json",
+                "op": [
+                  "readproperty"
+                ],
+                "htv:methodName": "GET"
+              }
+            ]
+        },
+        "color":{
+            "title": "color sensor value",
+            "description": "get the color value from the sensor",
+            "type": "array",
+            "items":{
+                "type":"number",
+                "maximum":255,
+                "minimum":0
+            },
+            "readOnly":true,
+            "observable": true,
+            "maxItems": 3,
+            "minItems": 3,
+            "forms": [
+                {
+                  "href": "http://localhost:9001/virtualcolorsensor/properties/color",
+                  "contentType": "application/json",
+                  "op": [
+                    "readproperty"
+                  ],
+                  "htv:methodName": "GET"
+                }
+              ]
+        }
+    }
+}

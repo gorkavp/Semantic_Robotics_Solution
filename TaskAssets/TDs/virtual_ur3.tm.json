@@ -1,0 +1,117 @@
+{
+    "@context":[
+        "https://www.w3.org/2019/wot/td/v1",
+        {
+          "@language":"en"
+        }
+      ],
+    "@type":"Thing",
+    "title": "VirtualUR3",
+    "description": "Virtual UR3 Collaborative Robotic Arm.",
+    "security": "nosec_sc",
+    "securityDefinitions": { 
+      "nosec_sc": {
+        "scheme": "nosec" 
+      }
+    },
+    "properties": {
+        "currentPose":{
+            "title": "Read UR3 Current Position",
+            "description": "get the current Cartesian position of the robot end-effector.",
+            "type": "object",
+            "readOnly": true,
+            "minItems": 6,
+            "maxItems": 6,
+            "properties": {
+                "x": {
+                    "type": "number",
+                    "unit": "meter",
+                    "description": "X"
+                },
+                "y":{
+                    "type": "number",
+                    "unit": "meter",
+                    "description": "Y"
+                },
+                "z":{
+                    "type": "number",
+                    "unit": "meter",
+                    "description": "Z"
+                },
+                "rx":{
+                    "type": "number",
+                    "unit": "degree",
+                    "description": "Rotation around X"
+                },
+                "ry":{
+                    "type": "number",
+                    "unit": "degree",
+                    "description": "Rotation around Y"
+                },
+                "rz":{
+                    "type": "number",
+                    "unit": "degree",
+                    "description": "Rotation around Z"
+                }
+            }
+        }
+    },
+    "actions": {
+        "goToPosition":{
+            "title":"Go to Position",
+            "description":"Moves the robot end-effector to a specified absolute Cartesian position.",
+            "synchronous":true,
+            "input": {
+                "type": "object",
+                "minItems": 6,
+                "maxItems": 6,
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "unit": "meter",
+                        "description": "X"
+                    },
+                    "y":{
+                        "type": "number",
+                        "unit": "meter",
+                        "description": "Y"
+                    },
+                    "z":{
+                        "type": "number",
+                        "unit": "meter",
+                        "description": "Z"
+                    },
+                    "rx":{
+                        "type": "number",
+                        "unit": "degree",
+                        "description": "Rotation around X"
+                    },
+                    "ry":{
+                        "type": "number",
+                        "unit": "degree",
+                        "description": "Rotation around Y"
+                    },
+                    "rz":{
+                        "type": "number",
+                        "unit": "degree",
+                        "description": "Rotation around Z"
+                    }
+                }
+            }
+        },
+        "closeGripper":{
+            "title":"Close Gripper",
+            "description":"Closes the RG2 gripper by setting the integer signal to 1.",
+            "safe": false,
+            "idempotent": true,
+            "synchronous":true
+        },
+        "openGripper":{
+            "title":"Open Gripper",
+            "description":"Opens the RG2 gripper by setting the integer signal to 0.",
+            "safe": false,
+            "idempotent": true,
+            "synchronous":true
+        }
+    }
+}

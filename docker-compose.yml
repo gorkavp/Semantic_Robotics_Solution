@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+
+  # ----------------------------------------
+  # 1. Thing Directory
+  # ----------------------------------------
+  thing-directory:
+    image: ghcr.io/tinyiot/thing-directory
+    container_name: wot-thing-directory
+    ports:
+      - "8081:8081"
+    networks:
+      - wot-net 
+      
+    restart: "no"
+
+networks:
+  wot-net:
+    driver: bridge 
