@@ -18,7 +18,7 @@
     "properties": {
         "objectPresence":{
             "title": "Read infrared sensor",
-            "description": "get the sensor state if there is object",
+            "description": "get the sensor state if there is object. Polling to update observe happens every 100ms",
             "type": "boolean",
             "readOnly": true,
             "observable": true,
@@ -38,7 +38,7 @@
             "description": "get the sensor state if there is object",
             "type": "number",
             "readOnly": true,
-            "observable": true,            
+            "observable": false,            
             "unit": "millimeter",
             "forms": [
               {

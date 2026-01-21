@@ -26,8 +26,8 @@ The following steps describe in detail how to setup the environment on Ubuntu 24
 
 
 #### Check versions (should all output a version number in the Terminal upon successful installation)
-- `node -v`
-- `npm -v`
+- `node -v` should be v20.16.0 or higher
+- `npm -v` should be 10.8.1 or higher
 
 ### Install TD Directory
 There are two ways of installing and running the TD directory.
