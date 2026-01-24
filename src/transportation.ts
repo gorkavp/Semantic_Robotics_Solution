@@ -1056,7 +1056,7 @@ async function main() {
 
 			const TARGET_DISTANCE_CB2 = 0.275; // Target distance for sensor3 (similar to sensor1)
 			const DISTANCE_TOLERANCE_CB2 = 0.02; // ±20mm tolerance
-			const PICKUP_Y_ADJUST_SCALE_CB2 = 0.3; // Reduced scale for smaller adjustments
+			const PICKUP_Y_ADJUST_SCALE_CB2 = 0.1; // Reduced scale for smaller adjustments
 			const MAX_PICKUP_Y_ADJUST_CB2 = 0.05; // clamp to ±5cm
 
 			const readPresence = async (
@@ -1389,12 +1389,6 @@ async function main() {
 							ur3IntermediatePosition,
 						);
 					}
-
-					// Stop ConveyorBelt2 to reset for next cube
-					console.log(
-						`[Stage 3 #${stage3Count}] Stopping ConveyorBelt2 after pickup...`,
-					);
-					await conveyor2.invokeAction("stopBelt");
 
 					if (!skipCube) {
 						console.log(
