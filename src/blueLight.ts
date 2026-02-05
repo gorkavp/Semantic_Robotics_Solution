@@ -1,5 +1,5 @@
 import { Servient } from "@node-wot/core";
-import { HttpClientFactory } from "@node-wot/binding-http";
+import { HttpClientFactory, HttpsClientFactory } from "@node-wot/binding-http";
 import { WoT } from "wot-typescript-definitions";
 
 const DEBUG = ["1", "true", "yes", "on"].includes(
@@ -37,7 +37,16 @@ function hrefFor(
 
 async function main() {
 	const servient = new Servient();
-	servient.addClientFactory(new HttpClientFactory());
+	servient.addClientFactory(new HttpClientFactory({ allowSelfSigned: true }));
+	servient.addClientFactory(new HttpsClientFactory({ allowSelfSigned: true }));
+
+	// Add credentials for Philips Hue light
+	servient.addCredentials({
+		"urn:dev:ops:32473-HueLight-1": {
+			username: "3815651",
+			password: "1gDvgr4OsdATB3ww",
+		},
+	});
 
 	const WoTHelpers = await servient.start();
 
@@ -91,11 +100,59 @@ async function main() {
 		// Initialize light to off
 		await blueLight.writeProperty("lightState", false);
 
+		// Load Philips Hue light TD from file system (left light for blue)
+		let hueLight: WoT.ConsumedThing | null = null;
+		const fs = require("fs");
+		const path = require("path");
+		const shutdownFlagPath = path.join(__dirname, "../.factory-shutdown");
+
+		try {
+			const hueTdPath = path.join(__dirname, "../TaskAssets/TDs/lightTD1.json");
+			if (fs.existsSync(hueTdPath)) {
+				const hueTdJson = JSON.parse(fs.readFileSync(hueTdPath, "utf8"));
+				hueLight = await WoTHelpers.consume(hueTdJson as WoT.ThingDescription);
+				console.log("✓ Connected to Philips Hue LEFT light (physical - BLUE)");
+			} else {
+				console.log("ℹ Hue TD file not found - virtual light only mode");
+			}
+		} catch (err) {
+			console.log(
+				"ℹ Philips Hue light not available - virtual light only mode:",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+
 		const COLOR_THRESHOLD = 100;
 		let blueCubeDetected = false;
 		let lastHeartbeat = Date.now();
+		let refreshInterval: NodeJS.Timeout | null = null;
 
-		// Monitor color sensor for blue cubes on the blue base
+		/**
+		 * Control Philips Hue light to blue color
+		 * Hue value: 46920 = blue (in Philips Hue 16-bit color space)
+		 * Saturation: 254 = fully saturated
+		 * Brightness: 254 = maximum brightness
+		 */
+		const activatePhilipsHueBlue = async () => {
+			if (!hueLight) return;
+
+			try {
+				await hueLight.invokeAction("setState", {
+					on: true,
+					hue: 46920, // Blue in Philips Hue color space
+					sat: 254, // Full saturation
+					bri: 254, // Maximum brightness
+					transitiontime: 2, // 200ms transition (unit: 100ms)
+				});
+				console.log("✓ Physical Philips Hue light turned BLUE");
+			} catch (err) {
+				console.error("✗ Failed to control Philips Hue light:", err);
+			}
+		};
+
+		// Monitor color sensor for blue cubes
+		console.log("⏳ Monitoring color sensor for blue cubes...");
+
 		const checkInterval = setInterval(async () => {
 			try {
 				const presence = await colorSensor.readProperty("objectPresence");
@@ -117,30 +174,29 @@ async function main() {
 					const rgb = (await colorValue.value()) as number[];
 					const [r, g, b] = rgb;
 
-					// Detect blue cube
+					// Detect blue cube using threshold-based classification
 					if (
 						b > COLOR_THRESHOLD &&
 						r < COLOR_THRESHOLD &&
 						g < COLOR_THRESHOLD
 					) {
-						console.log("🔵 Blue cube detected! Triggering blue light...");
+						console.log(`\n🔵 BLUE CUBE DETECTED! RGB: [${r}, ${g}, ${b}]`);
+						console.log("Activating lights...");
 
-						// Turn on virtual blue light
+						// Turn on virtual blue light in simulation
 						await blueLight.writeProperty("lightState", true);
 						await blueLight.writeProperty("lightColor", [0, 0, 255]);
+						console.log("✓ Virtual blue light activated (simulation)");
 
-						console.log("✓ Virtual blue light activated");
-
-						// TODO: Add Philips Hue integration here
-						// This would require Philips Hue Bridge credentials and API calls
-						console.log(
-							"Note: Physical Philips Hue light control would be triggered here",
-						);
+						// Turn on physical Philips Hue light
+						await activatePhilipsHueBlue();
 
 						blueCubeDetected = true;
 
-						// Keep running to maintain light state
-						console.log("Blue light control active. Press Ctrl+C to exit.");
+						console.log(
+							"\n✅ Blue cube detected! Virtual and physical lights activated.",
+						);
+						console.log("ℹ Lights will remain on until factory shutdown.\n");
 					}
 				}
 			} catch (error) {
@@ -148,18 +204,75 @@ async function main() {
 			}
 		}, 500);
 
-		// Keep the script running
-		process.on("SIGINT", async () => {
-			console.log("\nShutting down blue light control...");
-			clearInterval(checkInterval);
-			await blueLight.writeProperty("lightState", false);
-			await servient.shutdown();
-			process.exit(0);
-		});
+		let shuttingDown = false;
+		// Graceful shutdown handler
+		const shutdown = async () => {
+			if (shuttingDown) return;
+			shuttingDown = true;
+			try {
+				console.log("\n🛑 Shutting down blue light control...");
+				clearInterval(checkInterval);
+				clearInterval(shutdownWatchInterval);
+				if (refreshInterval) clearInterval(refreshInterval);
+
+				// Turn off virtual light
+				try {
+					await blueLight.writeProperty("lightState", false);
+					console.log("✓ Virtual blue light turned off");
+				} catch (err) {
+					// Ignore errors if simulation already shut down
+				}
+
+				// Turn off Philips Hue light
+				if (hueLight) {
+					try {
+						await hueLight.invokeAction("setState", { on: false });
+						console.log("✓ Philips Hue light turned off");
+					} catch (err) {
+						// Ignore errors if light unreachable
+					}
+				}
+
+				try {
+					await servient.shutdown();
+				} catch (err) {
+					// Ignore shutdown errors
+				}
+				console.log("Goodbye!\n");
+			} catch (err) {
+				// Catch any unexpected errors during shutdown
+			} finally {
+				process.exit(0);
+			}
+		};
+
+		// Watch for the transportation completion flag so we can shutdown even if
+		// Windows doesn't reliably deliver SIGTERM/SIGINT to child processes.
+		const shutdownWatchInterval = setInterval(() => {
+			if (shuttingDown) return;
+			try {
+				if (fs.existsSync(shutdownFlagPath)) {
+					void shutdown();
+				}
+			} catch {
+				// ignore
+			}
+		}, 250);
+
+		// Handle manual interruption and parent process exit
+		process.on("SIGINT", shutdown);
+		process.on("SIGTERM", shutdown);
+
+		// Detect when parent (concurrently/npm) exits
+		if (process.stdin.isTTY === false) {
+			process.stdin.on("end", shutdown);
+		}
 	} catch (error) {
 		console.error("Error:", error);
-		await servient.shutdown();
-		process.exit(1);
+		try {
+			await servient.shutdown();
+		} catch {}
+		process.exit(0); // Exit cleanly even on error
 	}
 }
 

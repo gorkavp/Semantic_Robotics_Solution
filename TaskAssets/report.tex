@@ -1,0 +1,220 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Deliverable 3: Semantic Robotics - IoT Remote Lab}
+
+\author{\IEEEauthorblockN{Gorka Vila P\'erez}
+\IEEEauthorblockA{\textit{Chair of Embedded Systems and Internet of Things}\\
+\textit{Technical University of Munich}\\
+Munich, Germany\\
+gorka.vila@tum.de}
+}
+
+\maketitle
+
+\begin{abstract}
+This report details the engineering process involved in implementing an end-to-end cube sorting workflow for Deliverable 3: Semantic Robotics
+of the IoT Remote Lab. The system integrates heterogeneous Web of Things (WoT) devices discovered through a Thing Directory: two Uarm robots, an UR3 robot, two conveyor belts, infrared distance/presence sensors, and a color sensor. The final pipeline executes three stages: (i) Uarm1 picks a cube from a spawn location and places it on ConveyorBelt1 (CB1), (ii) Uarm2 stops CB1 using infrared sensing, adapts the pickup location based on measured distance, and transfers the cube onto ConveyorBelt2 (CB2), and (iii) UR3 stops CB2, picks the cube with a distance-based pose correction, performs color detection at a dedicated sensing station while holding the cube, and sorts it by color. The work emphasizes practical robustness techniques for non-deterministic cyber-physical integration: TD-driven discovery, semantic unit normalization across randomized TDs, explicit synchronization between stages, bounded waiting for asynchronous actuation, sensor-derived corrective offsets, and graceful shutdown coordination between processes.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Web of Things, Thing Description, Node-WoT, Thing Directory, semantic heterogeneity, sensor-driven control, industrial robotics, CoppeliaSim
+\end{IEEEkeywords}
+
+\section{Discovery \& Methodology}
+
+\subsection{Initial Exploration (``Step 0'')}
+The Thing Directory at \texttt{http://localhost:8081/things} lists two UR3 robots, one UR3, two conveyors, four infrared sensors, a color sensor, and two virtual lights. The Thing Description (TD) files were already present in the project folder, enabling a thorough review of device functionalities.
+
+Initial analysis identified significant heterogeneity: Uarms provide \texttt{goTo(x,y,z)} for position control, whereas the UR3 requires \texttt{goToPosition(x,y,z,rx,ry,rz)} for six-degree-of-freedom pose specification. Gripper actions also differ, with \texttt{gripOpen/gripClose} for Uarms and \texttt{openGripper/closeGripper} for UR3. These differences necessitated device-type-specific dispatching within the control logic.
+
+\subsection{Component-Level Testing}
+A bottom-up integration strategy was adopted:
+\begin{enumerate}
+    \item \textbf{Robots:} Commanded single moves to safe coordinates and verified \texttt{currentPosition} convergence. Initial attempts failed because actions returned immediately. Adding a closed-loop wait that polls \texttt{currentPosition} every 100ms until all axes are within 20mm tolerance (with a 30s timeout and retry/backoff on transient HTTP errors) fixed this.
+    \item \textbf{Conveyors:} Started/stopped CB1 and observed cube motion in CoppeliaSim to estimate transport time.
+    \item \textbf{Sensors:} Polled \texttt{objectPresence} and \texttt{objectDistance} to characterize behavior. In the final pipeline, both pickup stations use a calibrated infrared trigger distance of 0.275m with a ±0.01m window, plus a stabilization dwell after belt stop to reduce variability.
+    \item \textbf{Color sensor:} Read RGB tuples and implemented a simple threshold-based classifier consistent with the code: red if R$>$100 and G,B$<$100; blue if B$>$100 and R,G$<$100; green if G$>$100 and R,B$<$100; otherwise unknown.
+\end{enumerate}
+
+This incremental approach ensured that each subsystem was validated prior to pipeline integration, thereby reducing the scope of debugging.
+
+\section{Implementation Process}
+
+\subsection{Evolution from Prototype to Full System}
+
+Initial attempts used a single sequential script to pick and place a cube, but it proved brittle when a second cube was introduced, causing workspace collisions between Uarm1 and Uarm2. The system was restructured into three concurrent stages, coordinated through explicit Boolean handshakes. Each stage operates in an independent asynchronous loop, enabling continuous operation.
+
+In the final implementation, the handshakes are explicit ``ready/busy'' flags between adjacent stages: Stage 1 and Stage 2 coordinate with \texttt{stage2ReadyForCube}, and Stage 2 and Stage 3 coordinate with \texttt{stage3ReadyForCube}. This keeps ownership of shared resources (especially conveyor start/stop) unambiguous.
+
+\subsection{Architecture}
+
+The final system consumes WoT Things via Node-WoT's HTTP binding and runs three parallel control loops for a continuous pipeline:
+
+\textbf{Stage 1 (Uarm1 → CB1):} Picks cube at spawnPickPosition $[-0.147, 1.320, 1.016]$, lifts to spawnLiftPosition $[-0.147, 1.320, 1.131]$, moves to conveyor1AbovePosition $[0.135, 1.550, 1.225]$, lowers to conveyor1PlacePosition $[0.135, 1.550, 1.105]$, releases after a 500ms settling delay, returns above the belt, and then back toward the spawn lift waypoint. Stage 1 does \emph{not} start CB1; Stage 2 owns CB1 start/stop to avoid race conditions. Handshake: Stage 1 waits for \texttt{stage2ReadyForCube==true} and then signals cube availability by setting \texttt{stage2ReadyForCube=false}.
+
+\textbf{Stage 2 (CB1 → Uarm2 → CB2):} Takes control of CB1 as soon as Stage 1 signals a cube. It starts CB1, uses sensor2 (\texttt{objectPresence}) as early warning, then monitors sensor1 for \texttt{objectPresence=true} and \texttt{objectDistance} close to the trigger setpoint $d_{\text{target}}=0.275\,\text{m}$ with tolerance ±0.01m. After stopping CB1 and waiting for stabilization (500ms + 1500ms), it measures the final stop distance $d_s$ and adapts the pickup X coordinate around conveyor1PickPosition $[1.205, 1.5675, 1.080]$ using a direct correction:
+\begin{equation}
+x_{\text{pick}} = x_{\text{nominal}} - (d_s - d_{\text{expected}}),\quad d_{\text{expected}}=0.16\,\text{m}
+\end{equation}
+Uarm2 lifts and transfers the cube to conveyor2DropPosition $[1.460, 1.285, 1.100]$ (with a relaxed tolerance of 0.1m for the drop), waits for Stage 3 readiness (\texttt{stage3ReadyForCube==true}), releases, then starts CB2.
+
+\textbf{Stage 3 (CB2 → UR3 → Color Sort):} Uses sensor4 (and sensor3 as a fallback) to detect an approaching cube, then in parallel moves UR3 above the pickup pose and monitors sensor3 distance to stop CB2 at $d_{\text{target}}=0.275\,\text{m}$ ±0.01m. After stopping and stabilization (500ms + 1500ms), it applies a direct correction to the pickup Y coordinate of conveyor2PickPosition $[1.475, 0.090, 1.120]$ (with $ry=-90^\circ$):
+\begin{equation}
+y_{\text{pick}} = y_{\text{nominal}} + (d_s - d_{\text{target}})
+\end{equation}
+UR3 then lifts, moves through ur3IntermediatePosition $[1.053, -0.0876, 1.174]$ (with $rx=179.1966^\circ, ry=-89.8671^\circ, rz=-109.2019^\circ$), holds the cube at colorSensorDropPosition $[0.800, 0.220, 1.145]$ (with $rx=90^\circ, ry=-90^\circ$) and waits up to 2s for \texttt{objectPresence} at the color sensor. The final drop is computed from the sensor pose: red uses $y=0.22+0.25=0.47$, blue uses $y=0.22-0.25=-0.03$, and green drops at the intermediate waypoint.
+
+\subsection{Position Setpoints (Code-Aligned)}
+Tables~\ref{tab:uarm_setpoints} and~\ref{tab:ur3_setpoints} list the exact world-frame setpoints used by the implementation (units: meters for $x,y,z$; degrees for $rx,ry,rz$).
+
+\begin{table}[ht]
+\centering
+\caption{Uarm Setpoints Used in Stages 1--2}
+\label{tab:uarm_setpoints}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccc}
+\hline
+\textbf{Waypoint} & \textbf{x} & \textbf{y} & \textbf{z} \\
+\hline
+spawnPickPosition & -0.147 & 1.3200 & 1.016 \\
+spawnLiftPosition & -0.147 & 1.3200 & 1.131 \\
+conveyor1AbovePosition & 0.135 & 1.5500 & 1.225 \\
+conveyor1PlacePosition & 0.135 & 1.5500 & 1.105 \\
+uarm2HomePosition & 1.205 & 1.5675 & 1.160 \\
+conveyor1PickPosition & 1.205 & 1.5675 & 1.080 \\
+conveyor2DropPosition & 1.460 & 1.2850 & 1.100 \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{UR3 Setpoints Used in Stage 3}
+\label{tab:ur3_setpoints}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccccc}
+\hline
+\textbf{Waypoint} & \textbf{x} & \textbf{y} & \textbf{z} & \textbf{rx} & \textbf{ry} & \textbf{rz} \\
+\hline
+conveyor2PickPosition & 1.475 & 0.0900 & 1.120 & 0.0000 & -90.0000 & 0.0000 \\
+ur3IntermediatePosition & 1.053 & -0.0876 & 1.174 & 179.1966 & -89.8671 & -109.2019 \\
+colorSensorDropPosition & 0.800 & 0.2200 & 1.145 & 90.0000 & -90.0000 & 0.0000 \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+\subsection{Key Control Patterns}
+\textbf{Sensor-driven stopping:} After initial failures with fixed timing (cubes arrived 1--2s early/late), I switched to distance-based triggers. Cubes are detected at $\sim$0.3m by presence sensors, tracked continuously, and the belt stops when the distance crosses into the target window.
+
+\textbf{Wait-for-position convergence:} A helper \texttt{uarmGoToAndWait()} invokes movement then polls \texttt{currentPosition} every 100ms (with retry/backoff on transient HTTP failures) until \emph{all} axes are within tolerance (L$\infty$ check) or a 30s timeout. This prevents gripper actions mid-motion.
+
+\section{Problems Encountered \& Troubleshooting}
+
+\subsection{Problem 1: Uarm2 Timeout Cascade}
+\textbf{Symptom:} During Stage 2, Uarm2 frequently logged ``Timeout waiting to reach position'' even though visual inspection showed the arm near the target. Subsequent cycles failed completely.
+
+\textbf{Investigation:} I added debug logging of \texttt{currentPosition} every 100ms. Logs revealed that the action returned immediately (HTTP 200), but the position continued to change for 2-3 seconds afterward. My initial code invoked \texttt{gripClose} 200ms after \texttt{goTo} returned, causing the gripper to close mid-motion at the wrong height-cube missed.
+
+\textbf{Root cause:} WoT action invocations are fire-and-forget; \texttt{goTo} starts motion but doesn't block until completion.
+
+\textbf{Solution:} Implemented \texttt{waitForUarmAt(target, tolerance=0.02, timeout=30s)} that polls \texttt{currentPosition} every 100ms and waits until $|x-x_t|,|y-y_t|,|z-z_t| \le 20\,\text{mm}$. Applied this after every critical move. This eliminated the ``close mid-motion'' failure mode.
+
+\subsection{Problem 2: Non-Deterministic Cube Stopping}
+\textbf{Symptom:} After switching to sensor-driven stopping, cubes still stopped at varying positions (sensor1 reading ranged 0.16--0.21m across runs). Uarm2 pickup succeeded only $\sim$60\% of the time.
+
+\textbf{Investigation:} I logged sensor1 distance every 50ms during approach. The data showed the cubes decelerated unevenly, sometimes stopping 20mm short and sometimes 30mm past the target, so belt inertia and cube friction may have varied per run in the simulation.
+
+\textbf{Solution iteration 1:} Added a short settling delay after \texttt{stopBelt} (500ms) plus a longer stabilization dwell (1500ms) to let the cube settle.
+
+\textbf{Solution iteration 2:} Captured the final stop distance $d_s$ after stabilization and computed a direct 1:1 correction: $x_{\text{offset}} = -(d_s - d_{\text{expected}})$ with $d_{\text{expected}}=0.16\,\text{m}$. The 1:1 offset aligns sensor error to the pickup axis and remains stable in practice.
+
+\subsection{Problem 3: Semantic Unit Mismatch in Randomized TDs}
+\textbf{Symptom:} In the random-units mode, sensor distances sometimes appeared an order of magnitude off, leading to incorrect pickup offsets (e.g., treating 0.275 as 0.275mm).
+
+\textbf{Investigation:} TDs occasionally advertised \texttt{unit: "millimeter"} while the simulation still returned meters. The conversion logic blindly trusted the TD, leading to values being divided by 1000.
+
+\textbf{Solution:} Implemented unit normalization and a small heuristic in \texttt{readDistance}: if a TD claims millimeters but the value is in the meter range (\textless{}10), treat it as meters. This resolved the mismatch for randomized TDs and stabilized Stage 2/Stage 3 pickup offsets.
+
+\subsection{Problem 4: CoppeliaSim Crashes on Startup}
+\textbf{Symptom:} Running the full system (transportation + redLight + blueLight concurrently) could overload the HTTP bridge/Thing Directory and destabilize the simulator.
+
+\textbf{Investigation:} Examined process logs; saw hundreds of HTTP requests/sec to Thing Directory and devices. Color sensor polling (at a 10ms interval in light scripts) hammered the HTTP server.
+
+\textbf{Solution:} Reduced unnecessary polling (light scripts check presence/color at 500ms rather than aggressive intervals) and added retry/backoff behavior in closed-loop waits to tolerate transient \texttt{/HTTP} failures. The current \texttt{npm start} uses \texttt{concurrently} to run all three controllers, relying on these rate limits and shutdown coordination for stability.
+
+\subsection{Problem 5: Graceful Shutdown on Windows}
+\textbf{Symptom:} Concurrent processes did not terminate cleanly when the main controller exited, leaving simulation tasks running.
+
+\textbf{Solution:} Added a filesystem-based shutdown flag (\texttt{.factory-shutdown}) that is created by the controller and polled by auxiliary scripts. This ensures a deterministic, cross-platform shutdown sequence without relying on POSIX signals.
+
+\section{Adapting to Heterogeneity}
+
+\subsection{Tackling Semantic Heterogeneity}
+The primary challenge involved integrating devices with fundamentally different interfaces, despite standardized TD descriptions. This was addressed at three levels:
+
+\textbf{Device abstraction layer:} Rather than scattering device-specific logic throughout stages, I created adapter functions. For movement, \texttt{uarmGoToAndWait()} handles 3-axis Uarms while UR3 uses direct \texttt{goToPosition()} with 6-DOF. Gripper control similarly dispatches: \texttt{gripOpen/gripClose} for Uarms, \texttt{openGripper/closeGripper} for UR3. This kept the stage logic device-agnostic.
+
+\textbf{Unit and coordinate handling:} TDs can vary in unit declarations (e.g., meters vs millimeters). I normalized units with \texttt{convertToMeters}/\texttt{convertFromMeters} and expanded unit synonyms (cm, mm, metre). For randomized TDs, I added a guard heuristic to check whether values appear to be meters despite a millimeter label. For coordinates, I avoided assumptions and instead calibrated fixed-world-frame poses per device: Uarm2 operates around $y\approx1.57$ at the CB1 station. At the same time, UR3 picks at CB2 using conveyor2PickPosition with $y=0.09$, and transitions through an intermediate waypoint with $y=-0.0876$. These values look inconsistent at first glance, but they are consistent within the shared CoppeliaSim world frame and the robots' kinematic reach.
+
+\textbf{Heterogeneous reliability requirements:} Sensor properties differ semantically: \texttt{objectPresence} (boolean, event-like) vs \texttt{objectDistance} (continuous float). My control loops poll distance continuously but use presence as a pre-filter so this hybrid approach handles both semantic types efficiently.
+
+\subsection{Logic for Cross-Run Robustness}
+Initial hardcoded sequences failed during repeated runs. Three adaptive mechanisms were implemented:
+
+\textbf{Sensor-feedback control:} Replaced timing-based belt stopping with sensor-driven triggers. For Stages 2 and 3, the controller first gates on \texttt{objectPresence=true} and then monitors \texttt{objectDistance} until it enters a calibrated window centered at $0.275\,\text{m}$ (±$0.01\,\text{m}$). Once within the window, the belt is stopped, and the final stop distance is sampled after stabilization to compute the pickup correction.
+
+\textbf{Dynamic position correction:} After the belt stops, the cube can settle short/long. The implemented controller captures the final stop distance and applies a direct (1:1) corrective offset instead of a tuned scale/clamp. For Stage 2: $x_{\text{pick}} = x_{\text{nominal}} - (d_s - d_{\text{expected}})$ with $d_{\text{expected}}=0.16\,\text{m}$. For Stage 3: $y_{\text{pick}} = y_{\text{nominal}} + (d_s - d_{\text{target}})$ with $d_{\text{target}}=0.275\,\text{m}$. This keeps the adjustment interpretable and consistent with the physical geometry.
+
+\textbf{State-based handshakes:} Stage 1 waits for \texttt{stage2ReadyForCube==true} before producing a cube, then signals handoff by setting \texttt{stage2ReadyForCube=false}. Stage 2 waits for \texttt{stage3ReadyForCube==true} before releasing onto CB2. This prevents race conditions and makes conveyor ownership deterministic.
+
+\subsection{Handling Randomness Issues}
+Three randomness sources required specific solutions:
+
+\textbf{Cube stop position variance (±30mm):} Initially caused 40\% pickup failures. First fix: added a 1.5s stabilization delay after stop to reduce bounce. Second fix: adaptive offset based on measured distance (above). Third fix: widened gripper approach tolerance from 20mm to 100mm for CB2 drop (less critical phase). The combined approach reduced failures to less than 2\%.
+
+\textbf{Random unit declarations in TDs:} When TDs randomly declared mm/cm while devices returned meters, conversions skewed by 10×--1000×. The fix was twofold: (1) unit normalization with expanded synonyms, and (2) a sanity check that treats meter-range values as meters even if the TD labels millimeters.
+
+\textbf{Color misclassification:} To reduce misclassification, the controller holds the cube at the calibrated color-sensor pose and waits (up to 2s) for the sensor \texttt{objectPresence} signal to assert before classifying. The implemented classifier is intentionally conservative and straightforward (channel threshold 100 with mutual exclusion). If no class is confidently detected (``unknown'') or a color quota is already met, the cube is skipped and released at a safe pose rather than being mis-sorted.
+
+\textbf{Asynchronous action completion:} Robot actions can return immediately while motion continues. Fixed delays were unreliable; the final solution is a polling-based \texttt{waitForUarmAt()}, which samples \texttt{currentPosition} every 100ms until convergence or a 30s timeout.
+
+\section{Discussion}
+
+\subsection{Scaling to Industrial Deployment}
+In a factory with more than 50 robot types, manual TD inspection for each device becomes infeasible. The following strategies are recommended:
+
+\textbf{Automated capability profiling:} A discovery agent that queries Thing Directory, parses all TDs, and builds a capability matrix (action signatures, coordinate systems, gripper types). Schema validation (e.g., JSON Schema) ensures TDs conform to expected patterns before runtime.
+
+\textbf{Semantic matching:} Instead of hardcoding ``Uarm'' vs ``UR3'' checks, use ontology-based reasoning. Tag actions with semantic annotations (e.g., \texttt{@type: MoveToPosition}) and dispatch based on semantics, not device names. This enables zero-code integration of new robot types conforming to the ontology.
+
+\textbf{Calibration routines:} On first device connection, run auto-calibration: command small moves, read feedback, infer workspace bounds, and coordinate transforms, store calibration in a persistent registry.
+
+\subsection{Additional Industrial Heterogeneity}
+Beyond this lab, real factories face:
+
+\textbf{Kinematic constraints:} Joint limits, singularities, payload capacity. TDs should expose these as machine-readable constraints; path planning must respect them.
+
+\textbf{Safety interlocks:} Emergency stops, light curtains, collaborative operation zones. Require extending WoT with safety property subscriptions and event-driven halting.
+
+\textbf{Communication protocol diversity:} Mix of OPC UA, Modbus, MQTT, proprietary. WoT bindings abstract this, but latency/reliability vary. Critical paths need QoS-aware protocol selection.
+
+\textbf{Time synchronization:} Multi-robot coordination (this lab used coarse handshakes) requires sub-millisecond sync in real deployments. TDs should expose timing capabilities; control logic must account for clock drift.
+
+\subsection{Conclusion}
+This laboratory exercise demonstrated that WoT Thing Descriptions facilitate discovery and basic interoperability. However, achieving production-level robustness requires additional layers, including explicit wait-for-completion patterns for asynchronous actions, sensor-feedback control to address non-determinism, and adaptive correction based on measured state. The transition from a system that functions once to one that operates reliably is achieved through systematic troubleshooting, empirical tuning, and defensive programming. These insights are broadly applicable to cyber-physical system integration.
+
+\end{document}

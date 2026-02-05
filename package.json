@@ -4,8 +4,9 @@
 	"description": "Semantic Robotics - WoT-based cube sorting system",
 	"main": "dist/transportation.js",
 	"scripts": {
-		"build": "tsc",
-		"start": "concurrently \"node dist/transportation.js\" \"node dist/redLight.js\" \"node dist/blueLight.js\"",
+		"clean": "rimraf dist tsconfig.tsbuildinfo",
+		"build": "npm run clean && tsc",
+		"start": "concurrently --kill-others-on-fail --success all --names \"TRANSPORT,RED-LIGHT,BLUE-LIGHT\" --prefix-colors \"cyan,red,blue\" \"node dist/transportation.js\" \"node dist/redLight.js\" \"node dist/blueLight.js\"",
 		"transport": "node dist/transportation.js",
 		"red-light": "node dist/redLight.js",
 		"blue-light": "node dist/blueLight.js"
@@ -19,6 +20,7 @@
 	"devDependencies": {
 		"@tsconfig/node20": "^20.1.4",
 		"typescript": "^5.7.2",
-		"concurrently": "^9.1.2"
+		"concurrently": "^9.1.2",
+		"rimraf": "^6.0.1"
 	}
 }

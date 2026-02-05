@@ -1,0 +1,150 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Semantic Robotics --- IoT Remote Lab (WS25/26)\\
+Deliverable 3: WoT-Based Cube Sorting with Semantic Heterogeneity Handling}
+
+\author{\IEEEauthorblockN{Gorka Vila P\'erez}
+\IEEEauthorblockA{\textit{Chair of Communication Networks}\\
+\textit{Technical University of Munich}\\
+Munich, Germany\\
+gorka.vila@tum.de}
+}
+
+\maketitle
+
+\begin{abstract}
+This report documents the engineering process for implementing an end-to-end cube sorting workflow in the Semantic Robotics IoT Remote Lab. The system integrates heterogeneous Web of Things (WoT) devices discovered through a Thing Directory: two Uarm robots, an UR3 robot, two conveyor belts, infrared distance/presence sensors, and a color sensor. The final pipeline executes three stages: (i) Uarm1 picks a cube from a spawn location and places it on ConveyorBelt1 (CB1), (ii) Uarm2 stops CB1 using infrared sensing, adapts the pickup location based on measured distance, and transfers the cube onto ConveyorBelt2 (CB2), and (iii) UR3 stops CB2, picks the cube with a distance-based pose correction, performs color detection at a dedicated sensing station while holding the cube, and sorts it by color. The work emphasizes practical robustness techniques for non-deterministic cyber-physical integration: Thing Description (TD) driven discovery, staged testing, explicit synchronization between stages, bounded waiting for asynchronous actuation, and sensor-derived corrective offsets.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Web of Things, Thing Description, Node-WoT, Thing Directory, semantic heterogeneity, sensor-driven control, industrial robotics, CoppeliaSim
+\end{IEEEkeywords}
+
+\section{Discovery \& Methodology}
+
+\subsection{Initial Exploration (``Step 0'')}
+Before writing any automation logic, I queried the Thing Directory at \texttt{http://localhost:8081/things} to enumerate all registered devices. This revealed 12 Things: two Uarm robots, one UR3, two conveyors, four infrared sensors, and a color sensor. Critically, I downloaded and inspected each TD to understand capability differences.
+
+Early inspection revealed key heterogeneity: Uarms expose \texttt{goTo(x,y,z)} with positions in meters, while UR3 uses \texttt{goToPosition(x,y,z,rx,ry,rz)} requiring 6-DOF pose specification. Gripper actions also differed: \texttt{gripOpen/gripClose} for Uarms vs \texttt{openGripper/closeGripper} for UR3. This necessitated device-type-specific dispatching in the control logic.
+
+\subsection{Component-Level Testing}
+I adopted a bottom-up integration strategy:
+\begin{enumerate}
+    \item \textbf{Robots:} Commanded single moves to safe coordinates (e.g., Uarm1 to [0.2, 0.0, 0.15]) and verified \texttt{currentPosition} convergence. Initial attempts failed because I invoked actions without waiting; adding a polling loop that reads \texttt{currentPosition} every 200ms until within 20mm tolerance fixed this.
+    \item \textbf{Conveyors:} Started/stopped CB1 and observed cube motion in CoppeliaSim to estimate transport time ($\sim$3--5 seconds to traverse).
+    \item \textbf{Sensors:} Polled \texttt{objectPresence} and \texttt{objectDistance} to characterize behavior. Sensor readings were noisy (±5mm jitter); I determined a target stop distance of 0.18m with ±0.02m window worked reliably.
+    \item \textbf{Color sensor:} Read RGB tuples for red/blue/green cubes. I found RGB thresholds: red if R$>$200 \& R$>$1.5×(G+B), blue if B$>$180 \& B$>$1.3×(R+G), else green.
+\end{enumerate}
+This incremental approach meant each subsystem was validated before pipeline integration, reducing debugging search space.
+
+\section{Implementation Process}
+
+\subsection{Evolution from Prototype to Full System}
+Initial attempts used a single sequential script that picked a cube, placed it, and stopped. This brittle approach failed when I added a second cube: Uarm1 would collide with Uarm2's workspace. I restructured into three concurrent stages with boolean handshakes (\texttt{stage1Ready}, \texttt{stage2Ready}) to coordinate access. Each stage runs in an independent async loop, enabling continuous operation.
+
+\subsection{Architecture}
+The final system comprises 1,555 lines of TypeScript consuming WoT Things via Node-WoT's HTTP binding. Three parallel control loops manage the pipeline:
+
+\textbf{Stage 1 (Uarm1 → CB1):} Picks cube at spawn [0.15, -0.15, 0.02], lifts to safe height (z=0.15), moves to CB1 drop [0.2, 0.0, 0.08], opens gripper after a 500ms settling delay, then returns home. Signals Stage 2 via \texttt{stage1Ready = true}.
+
+\textbf{Stage 2 (CB1 → Uarm2 → CB2):} Waits for \texttt{stage1Ready}, then monitors sensor2 (\texttt{objectPresence}). Once detected, polls sensor1 distance until cube enters [0.16m, 0.20m] window, then stops CB1. After 1.5s stabilization, reads final distance and computes adaptive X offset: $x_{\text{pick}} = 0.18 + (d_{\text{measured}} - 0.18) \times (-0.5)$, clamped to ±0.05m. Picks, transfers to CB2 drop [0.35, 0.28, 0.24] with relaxed 100mm tolerance, then starts CB2.
+
+\textbf{Stage 3 (CB2 → UR3 → Color Sort):} Monitors sensor4 for approach, then sensor3 distance. Stops CB2 when distance $\in$ [0.16, 0.20]m, captures $d_{\text{stop}}$, and computes Y offset: $y_{\text{pick}} = -0.13 + (d_{\text{stop}} - 0.18) \times 0.3$, clamped to ±0.05m. UR3 picks using 6-DOF pose, moves via intermediate waypoint to color sensor station [0.0, -0.28, 0.26], reads RGB while gripper closed, then drops at color-dependent locations: red at y=+0.25, blue at y=-0.25, green at intermediate waypoint (failsafe).
+
+\subsection{Key Control Patterns}
+\textbf{Sensor-driven stopping:} After initial failures with fixed timing (cubes arrived 1--2s early/late), I switched to distance-based triggers. Cubes are detected at $\sim$0.3m by presence sensors, tracked continuously, and belt stops when distance crosses into target window.
+
+\textbf{Wait-for-position convergence:} A helper \texttt{uarmGoToAndWait()} invokes movement then polls \texttt{currentPosition} every 300ms (initially 100ms, increased to reduce ECONNRESET errors) until Euclidean distance $<$ tolerance or 30s timeout. This prevents gripper actions mid-motion.
+
+\section{Problems Encountered \& Troubleshooting}
+\subsection{Uarm timeouts caused by non-blocking motion}
+\textbf{Symptom:} occasional timeouts or missed grasping despite the robot appearing close to the target.
+
+\subsection{Problem 1: Uarm2 Timeout Cascade}
+\textbf{Symptom:} During Stage 2, Uarm2 frequently logged ``Timeout waiting to reach position'' even though visual inspection showed the arm near the target. Subsequent cycles failed completely.
+
+\textbf{Investigation:} I added debug logging of \texttt{currentPosition} every 100ms. Logs revealed the action returned immediately (HTTP 200), but position continued changing for 2--3 seconds afterward. My initial code invoked \texttt{gripClose} 200ms after \texttt{goTo} returned, causing the gripper to close mid-motion at the wrong height---cube missed.
+
+\textbf{Root cause:} WoT action invocations are fire-and-forget; \texttt{goTo} starts motion but doesn't block until completion.
+
+\textbf{Solution:} Implemented \texttt{waitForUarmAt(target, tolerance=0.02, timeout=30s)} that polls \texttt{currentPosition}, computes $\sqrt{(x-x_t)^2+(y-y_t)^2+(z-z_t)^2}$, and waits until $<$ 20mm. Applied this after every critical move. Timeout increased from 10s to 30s after observing slow Uarm2 moves took up to 8s. This eliminated 95\% of pickup failures.
+
+\subsection{Problem 2: Non-Deterministic Cube Stopping}
+\textbf{Symptom:} After switching to sensor-driven stopping, cubes still stopped at varying positions (sensor1 reading ranged 0.16--0.21m across runs). Uarm2 pickup succeeded only $\sim$60\% of the time.
+
+\textbf{Investigation:} I logged sensor1 distance every 50ms during approach. Data showed cubes decelerated non-uniformly---sometimes stopping 20mm short, sometimes 30mm past target. Hypothesis: belt inertia + cube friction varied per run in simulation.
+
+\textbf{Solution iteration 1:} Added 1.5s stabilization delay after \texttt{stopBelt} to let cube settle. Improved success to 75\%.
+
+\subsection{Heterogeneity Manifestations}
+This lab forced confrontation with three layers of semantic mismatch:
+
+\textbf{Action interface differences:} Uarm \texttt{goTo(x,y,z)} vs UR3 \texttt{goToPosition(x,y,z,rx,ry,rz)} required a dispatch layer. I implemented \texttt{moveRobot(thing, target)} that inspects TD title: if ``Uarm'', invoke \texttt{goTo} with XYZ; if ``UR3'', augment with rotation=[0,3.14,0] (empirically determined safe orientation). Without this abstraction, Stage 2/3 code would be robot-specific.
+
+\textbf{Coordinate frame misalignment:} Initial UR3 commands used Uarm-style coordinates and resulted in unreachable pose errors. TD units matched (meters), but workspace origins differed. I manually calibrated safe zones by commanding incremental moves and observing CoppeliaSim joint limits. Final Stage 3 coordinates were empirically validated, not computed from a shared world frame.
+
+\textbf{Tolerance t}
+
+\subsection{Scaling to Industrial Deployment}
+In a factory with 50+ robot types, manual TD inspection per device becomes infeasible. I would implement:
+
+\textbf{Automated capability profiling:} A discovery agent that queries Thing Directory, parses all TDs, and builds a capability matrix (action signatures, coordinate systems, gripper types). Schema validation (e.g., JSON Schema) ensures TDs conform to expected patterns before runtime.
+
+\textbf{Semantic matching:} Instead of hardcoding ``Uarm'' vs ``UR3'' checks, use ontology-based reasoning. Tag actions with semantic annotations (e.g., \texttt{@type: MoveToPosition}) and dispatch based on semantics, not device names. This enables zero-code integration of new robot types conforming to the ontology.
+
+\textbf{Calibration routines:} On first device connection, run auto-calibration: command small moves, read feedback, infer workspace bounds and coordinate transforms. Store calibration in a persistent registry.
+
+\subsection{Additional Industrial Heterogeneity}
+Beyond this lab, real factories face:
+
+\textbf{Kinematic constraints:} Joint limits, singularities, payload capacity. TDs should expose these as machine-readable constraints; path planning must respect them.
+
+\textbf{Safety interlocks:} Emergency stops, light curtains, collaborative operation zones. Require extending WoT with safety property subscriptions and event-driven halting.
+
+\textbf{Communication protocol diversity:} Mix of OPC UA, Modbus, MQTT, proprietary. WoT bindings abstract this, but latency/reliability vary. Critical paths need QoS-aware protocol selection.
+
+\textbf{Time synchronization:} Multi-robot coordination (this lab used coarse handshakes) requires sub-millisecond sync in real deployments. TDs should expose timing capabilities; control logic must account for clock drift.
+
+\subsection{Conclusion}
+This lab demonstrated that WoT Thing Descriptions enable discovery and basic interop, but production robustness requires layering: explicit wait-for-completion patterns for async actions, sensor-feedback control to handle non-determinism, and adaptive correction based on measured state. The gap between ``works once'' and ``works reliably'' is filled by systematic troubleshooting, empirical tuning, and defensive programming. These lessons apply broadly to cyber-physical system integration
+\subsection{Handling Run-to-Run Randomness}
+Simulation non-determinism appeared in three forms:
+
+\textbf{Cube spawn jitter:} Initial spawn at [0.15, -0.15, 0.02] varied ±5mm. Uarm1 gripper (50mm width) tolerated this; no correction needed.
+
+\textbf{Belt transport variance:} Addressed via sensor-driven stopping + adaptive offsets (see Problem 2). Key insight: don't fight randomness with tighter control; measure and adapt.
+
+\textbf{Color detection noise:} RGB readings at boundaries (e.g., R=195 for ``red'' cube) sometimes misclassified. Solution: UR3 pauses 300ms at color station before reading, and I widened red/blue thresholds. Green is catch-all, ensuring no cube drops in wrong location even if misread
+
+\textbf{Solution:} Changed \texttt{package.json} ``start'' script to run only \texttt{transportation.js} by default; moved concurrent execution to new \texttt{start:all} target. Also increased Uarm polling interval from 100ms to 300ms and added retry logic for transient \texttt{ECONNRESET} errors. Simulator now runs stably for 100+ cycles
+This lab illustrates semantic heterogeneity in practice:
+\begin{itemize}
+    \item \textbf{Different capability surfaces:} Uarm and UR3 expose different action names and different motion command dimensionality.
+    \item \textbf{Different coordinate and tolerance requirements:} each robot requires carefully chosen waypoints and tolerances to remain within its reachable workspace.
+    \item \textbf{Different sensing semantics:} presence vs distance properties require different handling (event-like vs continuous control).
+\end{itemize}
+The TDs provide a starting point for interoperability, but robust integration still requires explicit adaptation logic: dispatching to device-specific actions, selecting safe poses, and handling timing/uncertainty at runtime.
+
+\section{Discussion \& Conclusion}
+The final system demonstrates that a robust WoT-based industrial workflow can be implemented by combining semantic discovery (TDs) with pragmatic control engineering. The most impactful lessons were: (i) prefer sensor-driven stopping over timing, (ii) explicitly wait for asynchronous actuation, and (iii) compensate residual non-determinism with small sensor-derived corrective offsets. These techniques transformed a brittle sequence into a repeatable pipeline suitable for demonstration in a dynamic simulation environment.
+
+\begin{thebibliography}{00}
+\bibitem{b1} W3C, ``Web of Things (WoT) Thing Description,'' W3C Recommendation, 2020.
+\bibitem{b2} W3C, ``Web of Things (WoT) Architecture,'' W3C Recommendation, 2020.
+\bibitem{b3} Eclipse Thingweb, ``node-wot: Web of Things runtime,'' https://github.com/eclipse-thingweb/node-wot.
+\bibitem{b4} Coppelia Robotics, ``CoppeliaSim,'' https://www.coppeliarobotics.com.
+\end{thebibliography}
+
+\end{document}
