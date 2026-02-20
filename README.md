@@ -154,15 +154,3 @@ The solution has been designed to work with both unit modes:
 - **Mode 1** (`node simulationServer.js 1`): Devices use random units
 
 The automatic unit conversion ensures consistent behavior in both modes.
-
-## Notes
-
-- The solution processes at least one cube of each color (red, blue, green) then exits
-- Scripts can run on separate devices as they communicate through the Thing Directory
-- The Philips Hue integration is prepared but requires Bridge credentials
-- Grabbing cubes works 9/10 times as per task specifications
-- All source TypeScript files and compiled JavaScript files are included
-
-## Lab Report
-
-Please refer to [TaskAssets/labReportInstructions.md](TaskAssets/labReportInstructions.md) for the lab report requirements.
