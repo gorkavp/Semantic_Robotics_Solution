@@ -1,4 +1,4 @@
-# Deliverable 3: Semantic Robotics Solution
+# Semantic Robotics Solution
 
 This solution implements an automated cube sorting system using Web of Things (WoT) principles with semantic heterogeneity support.
 
